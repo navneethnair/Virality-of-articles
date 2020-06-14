@@ -1,0 +1,749 @@
+---
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: '4'
+urlcolor: blue
+---
+
+\clearpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=F,fig.width = 7, fig.height = 4, results = TRUE)
+if(!require("pacman")) install.packages("pacman")
+pacman::p_load(dplyr, ggplot2, magrittr, gridExtra, reshape, rmarkdown, leaps, glmnet, bestglm, knitr, pROC, reshape2, car, varhandle, GGally, randomForest, cowplot,rpart, partykit, tree) 
+```
+# Executive Summary
+
+## Background and main goal
+
+Authenticity of news and information affects societies and businesses. This problem of “fake news” has existed for a very long time but the rise of the internet and social media in particular has made it dangerous. The reach and speed at which information spreads is amplified by social networks. This is also applicable to opinion pieces that get extremely viral but do not have any factual basis to them. In fact, BuzzFeed News did an analysis on over 1,000 stories to determine the nature and popularity of false or misleading information and in that analysis we can see that of the top 200 most popular items only 37% were “mostly true”.
+
+Figuring out what causes a post to go viral is the first step in understanding and tackling this problem.Governments and corporations are interested in identifying articles, social media posts or messages that have the potential to go viral as soon as they appear on the internet. By identifying potentially viral posts quickly, moderators can limit the impact fake news could have by quickly checking these posts for fake news content.
+
+**The goal of our project is to build a model that predicts the likelihood of a post or article going viral based on it’s characteristics**
+
+
+## Summary and process
+
+* We utilized a dataset on online news articles avaiable on the University of California, Irvine's machine learning repository
+
+* We explored four different models to classify an article as viral –
+    1. Logistic regression via backward elimination, 
+    2. Lasso logistic regression
+    3. Single Tree
+    4. Random Forest
+
+* Random Forest classification gave us the highest accuracy and had a tessting classification error of 34.8%
+
+* Across models, certain predictors or characteristics stood out as critical to virality or share count of an article
+    + Data channel: Articles shared in the technology and social media channels had the highest likelihood of virality
+    + Shares of keywords: Articles with popular keywords tend to be shared more
+    + Subjectivity: Opinion pieces based on experiences and emotions tend to be shared more
+    + Number of links: Articles with large number of links to other articles become more viral
+    + Polarity: Tone of writing (positive vs negative language) can increase likelihood of virality
+
+* Governments / organizations can use this model to predict the likelihood of virality of an article. This in turn can help in quick moderation of information.
+
+
+# Data Cleaning and Exploratory Data Analysis
+
+## About the dataset
+
+We utilized a publicly available data set on the University of California, Irvine’s machine learning repository for this project. This dataset summarizes a heterogeneous set of features about 39,797 articles in a period of two years. The dataset had 58 unique feature that can be described by seven categories i.e. i.e. words, links, digital media, time, keywords, and features related to natural language processing (such as closeness to LDA topic, sentiment polarity etc.)
+
+The original source for the data set is K. Fernandes, P. Vinagre and P. Cortez. A Proactive Intelligent Decision Support System for Predicting the Popularity of Online News. Proceedings of the 17th EPIA 2015 - Portuguese Conference on Artificial Intelligence, September, Coimbra, Portugal.
+
+
+```{r}
+data.org <- read.csv("OnlineNewsPopularity.csv")
+```
+
+## Data cleaning
+
+There were a high number of variables and the data needed to cleaned so that it could be used for modeling. To increase the effectiveness of the dataset
+
+* We removed features that were
+    + Unique per row (eg. URL, timedelta)
+    + Transformations of another feature in the model or information that can be aggregated in one field (e.g., n_non_stop_words, n_non_stop_unique_tokens, kw_min_min, kw_max_min, kw_min_max, kw_max_max, kw_min_avg, kw_max_avg)
+    + Idiosyncratic to and relevant only within the environment of the publishing site due to reduced generic prediction power
+    
+* We transformed features that
+    + Could be combined into one factor feature (e.g, data_channel had 5 features that could be combined into one)
+
+* We removed rows with NA values or junk data
+
+* We added a response variable ‘Virality’ based on # of shares where 0 meant low shared and 1 meant high shares
+
+
+```{r}
+
+data_clean <- data.org %>%
+  select(-url, -timedelta, -n_non_stop_words, -n_non_stop_unique_tokens, -num_self_hrefs, -kw_min_min, -kw_max_min, -kw_min_max, -kw_max_max, -kw_min_avg, -kw_max_avg, -self_reference_min_shares, -self_reference_max_shares, -self_reference_avg_sharess, -is_weekend) %>%
+  filter(n_unique_tokens > 0) %>%
+  mutate(data_channel = if_else(data_channel_is_lifestyle == 1, "Lifestyle", if_else(data_channel_is_entertainment == 1, "Entertainment", if_else(data_channel_is_bus == 1, "Business", if_else(data_channel_is_socmed == 1, "Social Media", if_else(data_channel_is_tech == 1, "Technology", if_else(data_channel_is_world == 1,"World","Other"))))))) %>%
+  mutate(day_published = if_else(weekday_is_monday == 1, "Monday", if_else(weekday_is_tuesday == 1, "Tuesday", if_else(weekday_is_wednesday == 1, "Wednesday", if_else(weekday_is_thursday == 1, "Thursday", if_else(weekday_is_friday == 1, "Friday", if_else(weekday_is_saturday == 1,"Saturday","Sunday"))))))) %>%
+  mutate(data_channel = as.factor(data_channel)) %>%
+  mutate(day_published = as.factor(day_published))%>%
+  select(-weekday_is_monday, -weekday_is_tuesday, -weekday_is_wednesday,-weekday_is_thursday, -weekday_is_friday, -weekday_is_saturday, -weekday_is_sunday,-data_channel_is_lifestyle, -data_channel_is_entertainment, -data_channel_is_bus, -data_channel_is_socmed, -data_channel_is_tech,-data_channel_is_world) %>%
+  select(-LDA_00, -LDA_01, -LDA_02, -LDA_03, -LDA_04, -global_rate_positive_words, -global_rate_negative_words, -rate_negative_words, -min_positive_polarity, -max_positive_polarity, -min_negative_polarity, -max_negative_polarity, -abs_title_subjectivity, -abs_title_sentiment_polarity) %>%
+  mutate(virality = as.factor(if_else(shares > median(shares),1,0)))
+
+  
+#str(data_clean)
+```
+**The cleaned dataset has 38463 obs. of  22 variables**
+
+* `n_tokens_title:` A numeric variable which contains the data for the number of variables in the title of the post
+* `n_tokens_content:` Number of words in the content of the news post
+* `n_unique_tokens:` Rate of unique words in the content of the post
+* `num_hrefs:` Number of links embedded in the post
+* `num_imgs:` Number of images splentered through the post
+* `num_videos`: Number of videos attached through the news post
+* `average_token_length`: Average length of the words in the content
+* `num_keywords`: Number of keywords in the metadata that are used as tags in the metadata
+* `kw_avg_min`: Worst keyword (avg. shares): Average shares of the worst performing keyword mentioned in the article    
+* `kw_avg_max`: Best keyword (avg. shares): Average shares of the best performing keyword mentioned in the article      
+* `kw_avg_avg`: Avg. keyword (avg. shares): Average shares of the average performing keyword in the article
+* `global_subjectivity`: Subjectivity of the text on 0 to 1 scale
+* `global_sentiment_polarity`: Polarity of sentiment of the text on a -1 to 1 scale
+* `rate_positive_words`: Rate of positive words among non-neutral words in the content
+* `avg_positive_polarity`: Avg. polarity of positive words on a o to 1 scale
+* `avg_negative_polarity`: Avg. polarity of negative words on a -1 to 0 scale
+* `title_subjectivity`: Subjectivity of the title on 0 to 1 scale
+* `title_sentiment_polarity`: Polarity of sentiment of the title on a -1 to 1 scale
+* `shares`: Number of shares (target) garnered by the article in questions
+* `data_channel`: The media channel that the article was published under (e.g, Entertainment, Business, Technology etc)
+* `day_published`: Day of the week the article was published
+* `virality`: Defined as 1 for shares > median shares and 0 otherwise
+
+**A summary of the cleaned data is shown below**
+
+```{r}
+summary(data_clean)
+```
+
+**From the summary, we can see that,**
+
+* Shares of the articles analysed range from 1 to 843,300 making it a diverse dataset. 
+* The global subjectivity score shows that the articles range from completely objective with a score of 0 to completely subjective opinions with a score of 1.
+* Most of the articles were published under the channel "World" with "Business" and "Entertainment" coming up on rest of the majority. 
+* As for the days of the week, over 65% of the articles were published in the middle of the weekf from Tuesday to Wednesday. 
+* We see that the number of images or number of videos are modest at best with average number of images and videos in a post as 1.
+
+
+## EDA
+
+### Plotting relationship between shares and number of links, images and videos in the article
+```{r}
+#EDA
+par(mfrow=c(1,3))
+plot(data_clean$num_videos, data_clean$shares, pch=16, xlab = "Number of videos", ylab = "Number of shares")
+plot(data_clean$num_imgs, data_clean$shares, pch=16, xlab = "Number of images", ylab = "Number of shares")
+plot(data_clean$num_hrefs, data_clean$shares, pch=16, xlab = "Number of links", ylab = "Number of shares")
+```
+**Number of shares is higher for lower number of images and videos per article. It is probably because there are a lower number of images and videos overall. The interesting observation is that links per article also follow the same trend.**
+
+### Plotting relationship between NLP features and shares
+
+We then plotted some of the NLP characteristics like subjectivity, global sentiment polarity and avg positive polarity against the number of shares to observe the relationship. 
+
+```{r}
+par(mfrow=c(1,3))
+plot(data_clean$avg_positive_polarity, data_clean$shares, pch=16, xlab = "Average positive polarity", ylab = "Number of shares")
+plot(data_clean$global_subjectivity, data_clean$shares, pch=16, xlab = "Global subjectivity", ylab = "Number of shares")
+plot(data_clean$global_sentiment_polarity, data_clean$shares, pch=16, xlab = "Global sentiment polarity", ylab = "Number of shares")
+
+```
+**It's interesting to see that articles with the most neutral positions actually get the highest number of shares showing that articles polar in tone and sentiment deter people from sharing the article.**
+
+### Plotting relationship between other external characteristics and shares
+
+To understand whether manipulated characteristics like the channel of share, publishing day and number of keywords have any effect, we plot them against the number of shares
+
+```{r fig.width=10, fig.height=5}
+
+a <- data_clean %>%
+ggplot(aes(x = num_keywords, y = shares)) +
+geom_bar(stat = "identity", position = "dodge") +
+theme(axis.text.y = element_text(angle = 60), axis.text.x = element_text(angle = 60)) +
+ggtitle("Keywords vs. Shares")
+
+b <- data_clean %>%
+ggplot(aes(x = data_channel, y = shares)) +
+geom_bar(stat = "identity", position = "dodge") +
+theme(axis.text.y = element_text(angle = 60), axis.text.x = element_text(angle = 60)) +
+ggtitle("Datachannel vs. Shares")  
+
+c <- data_clean %>%
+ggplot(aes(x = day_published, y = shares)) +
+geom_bar(stat = "identity", position = "dodge") +
+theme(axis.text.y = element_text(angle = 60), axis.text.x = element_text(angle = 60)) +
+ggtitle("Publishing day vs. Shares")  
+
+plot_grid(a, b, c, align = "h", ncol = 3)
+
+```
+**We see that Articles with ~6 keywords have the maximum number of shares. Another interesting finding was that posts published on Wednesdays have the highest number of shares! This is probably supported by middle of the week slump causing people to browse and share more. Moreover, articles on Business and Technology themes have the highest number of shares showing the relative importance of theme based on current interest. **
+
+### Virality vs Subjectivity 
+
+If we were to believe media reports, it is said that rather than objective pieces of journalism, subjective pieces get more viral views due to the point of view aspect that people can relate to as opposed to the objective facts. In fact, that is also what the buzzfeed study mentioned earlier found. About 40% of the most popular articles were completely subjective and opinion pieces. Let us put this hypothesis to tes
+
+```{r}
+data_clean %>% group_by(virality) %>% summarise(mean(title_subjectivity))
+```
+
+On average subjectivity of the title seems to be higher among virality = 1
+We can see the distribution of title_subjectivity through back to back box plots. Again, title_subjectivity seems to be higher when virality= 1
+
+```{r}
+boxplot(title_subjectivity ~ virality, data_clean)
+```
+
+The average is higher for 1 but not by much. So the claims are supported but only weakly. 
+
+### Predictor correlations
+
+We plotted the heatmap to visually detect correlations between predictors.
+
+```{r, fig.height = 5, fig.width = 5}
+
+#HeatMap
+heat_map_data <- data_clean %>%
+  select(-data_channel, -day_published, -virality)
+heatmap(cor(heat_map_data))
+
+```
+
+* Lighter shades imply high correlation
+* Very low correlation observed between predictors variables except for a few pairs. E.g., kw_avg_max and kw_avg_min
+* Due to the low correlation between predictor variable pairs, we decided not to remove any variables before the model building process.
+
+To understand how the numeric variables relate to each other and the skewness of their distribution, also looked at their correlation plots in action:
+
+```{r, fig.height = 10, fig.width = 15}
+
+#Removing shares
+data_clean %<>%
+  select(-shares)
+
+#ggpairs(data_clean %>% select (n_tokens_title, n_tokens_content, n_unique_tokens, num_hrefs, num_imgs, num_videos, average_token_length, num_keywords, kw_avg_min, kw_avg_max, kw_avg_avg, global_subjectivity, global_sentiment_polarity, rate_positive_words, avg_positive_polarity, avg_negative_polarity, title_subjectivity, title_sentiment_polarity, virality))
+```
+
+
+The correlation numbers show what the heat map also proved - i.e. very little correlation.
+
+
+We observed that a few variables are highly skewed (e.g, `n_tokens_count`)
+For improving the quality of the data, we log transform `n_tokens_count`. We don't transform `num_href` and `kw_avg_avg` this way because of the values containing zero.
+
+```{r}
+data_clean %<>%
+  mutate(n_tokens_content = log(n_tokens_content))
+```
+
+# Model Building 
+
+## Testing and Train data split
+
+We first will divide the dataset into testing and training data. In the machine learning community, the ratio of training to testing data is 2:1. We have 70% values in our training dataset and 30% of the values in our testing data. 
+
+```{r}
+#Test/Train data
+set.seed(06071991)
+index.t <- sample(nrow(data_clean), 0.7*dim(data_clean)[1])
+train_data <- data_clean[index.t, ]
+test_data <- data_clean[-index.t, ]
+```
+
+
+We then explore four meodel building models - Lasso Logistic Regression, Logistic regression by backward elimination, Decision Trees and Random Forests.
+
+## Lasso Logistic
+
+We explored building a spare logistic regression model using Lasso. We explored Lasso using alpha = 1 and then plotted the fit to understand the relationship how deviance changes for different values of lambda.
+
+```{r}
+#Lasso Logistic regression
+X <- model.matrix(virality~., train_data)[,-1] # for each factor: num of levels -1
+Y <- train_data[, 21]
+set.seed(06071991) # to have same sets of K folds
+fit1.cv <- cv.glmnet(X, Y, alpha=1, family="binomial", nfolds = 10)
+plot(fit1.cv)
+```
+
+We see that using lamba.1se gives us a more parsimonious model while maintaining a low binomial deviance. Hence we chose the lambda = lambda.1se from the deviance plot for the model. 
+
+Based on lambda.1se, the non-zero coefficients / predictors we get are as follows:
+
+```{r}
+coef.1se <- coef(fit1.cv, s="lambda.1se")
+coef.1se <- coef.1se[which(coef.1se !=0),]
+
+rownames(as.matrix(coef.1se))
+```
+
+We then verify whether all these predictors were significant at a 0.05 level using an Anova test. The Anova table of deviance is given below.
+
+```{r}
+fit.lasso.glm <- glm(virality ~ n_tokens_content + num_hrefs + num_keywords + kw_avg_max + kw_avg_avg + global_subjectivity + rate_positive_words + title_subjectivity + title_sentiment_polarity + data_channel + day_published, data = train_data, family = binomial(logit))
+
+Anova(fit.lasso.glm)
+
+```
+
+We observed from the Anova test that all variables given by lasso are significant at a 0.05 level.
+
+The final lasso model is given by 
+
+
+```{r fig.width = 10}
+summary(fit.lasso.glm)
+```
+
+The final model has 11 predictor variables as listed above
+
+Some variables increased the probability of virality from the base level E.g., number of links, number of keywords, number of words in the content etc. while others decreased the probability of virality (e.g., if the published day was Monday)
+
+
+## Logistic regression by backward elimination
+
+For our second version of the model, we reduced the number of predictors by backward elimination. We began by running a logistic regression of virality vs all predictor variables.We removed insignificant predictor variables one at a time until we achieved a model where all predictors were significant at the 0.05 level. 
+
+```{r, results = "hide"}
+
+#Backward Elimination
+fit1 <- glm(virality~., data = train_data, family = binomial(logit))
+Anova(fit1)
+fit1.1 <- update(fit1, .~. -n_tokens_title)
+Anova(fit1.1)
+fit1.2 <- update(fit1.1, .~. -title_subjectivity)
+Anova(fit1.2)
+fit1.3 <- update(fit1.2, .~. -avg_negative_polarity)
+Anova(fit1.3)
+fit1.4 <- update(fit1.3, .~. -num_imgs)
+Anova(fit1.4)
+fit1.5 <- update(fit1.4, .~. -global_sentiment_polarity)
+Anova(fit1.5)
+fit1.6 <- update(fit1.5, .~. -num_videos)
+Anova(fit1.6)
+fit1.7 <- update(fit1.6, .~. -average_token_length)
+Anova(fit1.7)
+fit1.8 <- update(fit1.7, .~. -n_unique_tokens)
+Anova(fit1.8)
+```
+
+
+**The final model we obtained on significance level 0.05 had 12 predictor variables. The model is given below.**
+
+```{r}
+fit.BE <- fit1.8
+summary(fit.BE)
+```
+
+The signifcance test of the variables in the final model is given below:
+
+```{r}
+Anova(fit.BE)
+```
+
+The model achieved through backward elimination is fairly similar to the model achieved through lasso logistic with the exception  of one extra predictor i.e. kw_avg_min which explains to us the average shares on the worst used keyword in the text. 
+
+## Single tree
+
+We built a single tree to help classify articles as viral vs not. The tree obtained is shown below. It has seven leaf nodes and uses three parameters for splitting - data channel, date published and kw_avg_avg.
+
+```{r}
+fit.tree <- tree(virality~., train_data, control=tree.control(nrow(train_data), mindev = 0.003), split = "deviance")
+plot(fit.tree) 
+text(fit.tree, pretty = TRUE)
+```
+
+Here is a summary of the decision tree
+
+```{r} 
+summary(fit.tree)
+```
+
+
+## Random forest
+
+We then built a random forest to help predict virality.
+
+We started by tuning the ntree parameter. We set mtry = 3 and saw the effect of changing ntree. Based on the chart below, we realized that we need around 300 trees for the error to settle.
+
+```{r}
+fit.rf.1 <- randomForest(virality~., train_data, mtry=3, ntree=500) # change ntree
+plot(fit.rf.1, pch=16, type="p", main="default plot") 
+legend("topright", colnames(fit.rf.1$err.rate), col=1:3, cex=0.8, fill=1:3)
+```
+
+
+We then saw the effect on the OOB error by keeping ntree fixed at 300 and tuning mtry. Based on the chart below, we chose mtry=4 since it gave the lowest OOB error.
+
+
+```{r}
+rf.error.p <- 1:10 # set up a vector of length 19 
+for (p in 1:10) # repeat the following code inside { } 19 times 
+  {
+
+fit.rf.1 <- randomForest(virality~., train_data, mtry=p, ntree=300)
+
+#plot(fit.rf, col= p, lwd = 3)
+
+rf.error.p[p] <- fit.rf.1$err.rate[300,1] # collecting oob mse based on 250 trees 
+
+} 
+
+rf.error.p # oob mse returned: should be a vector of 19
+
+plot(1:10, rf.error.p, pch=16, xlab="mtry", ylab="OOB mse of mtry", main = "Testing errors as func of mtry with Salaries as response") 
+
+lines(1:10, rf.error.p)
+
+```
+
+
+We then built 300 deep random trees (ntree=300) for each bootstrap sample by splitting 4 (mtry = 4) randomly chosen predictors at each split.
+
+
+```{r}
+
+#RandomForest
+fit.rf.1 <- randomForest(virality~., train_data, mtry=5, ntree=300, importance = T) # by default, the minsize = 5 in regression 
+plot(fit.rf.1)
+```
+
+* We then understood the relative importance of each variable in the random forest. The chart below shows the mean decrease in Gini index for each variable.
+
+* From the model, the most important factors for virality come out to be : Avg. shares of the average keyword, data channel, text subjectivity, number of words in the content and the rate of unique words in the content
+
+```{r}
+rf.imp <- randomForest::importance(fit.rf.1, type=2) 
+rf.imp <- rf.imp[order(rf.imp, decreasing = T), ] # type2 to choose the mean gini index reduction 
+varImpPlot(fit.rf.1, type=2)
+```
+
+
+
+# Model Selection
+
+## Testing classification error
+
+We calculate the testing classification errors of the four models.
+
+```{r}
+
+#Lasso logistic
+predict.lasso <- predict(fit.lasso.glm, test_data, type = "response")
+fit.lasso.test.err <- mean(test_data$virality != ifelse(predict.lasso>0.5,1,0))
+paste("Testing classification error for Lasso logistic is ", fit.lasso.test.err)
+
+#Backward elimination
+predict.BE <- predict(fit.BE, test_data, type = "response")
+fit.BE.test.err <- mean(test_data$virality != ifelse(predict.BE>0.5,1,0))
+paste("Testing classification error for the logistic regression model by backward elimination is", fit.BE.test.err)
+
+#Single decision tree
+predict.tree <- predict(fit.tree, test_data, type = "class")
+paste("Testing classification error for single tree is",mean(predict.tree!= test_data$virality))
+
+#Random Forest
+predict.rf1 <- predict(fit.rf.1, test_data, type = "response")
+paste("Testing classification error for Random Forest is",mean(predict.rf1!= test_data$virality))
+```
+
+From the testing classification error values, we can see that random forest is the best model to go by for accuracy since it has the lowest testing classification error of 0.344 as opposed to 0.359 for lasso, 0.361 for backward elimination and 0.369 for a single decision tree.
+
+## ROC Curves
+
+We will now plot the AUC curve using the test data to choose the best model among the three models suggested:
+
+```{r message=FALSE}
+
+fit_backward_test <- predict(fit.BE, test_data, type="response") # get the prob's
+fit_lasso_test <- predict(fit.lasso.glm, test_data, type="response")
+fit_RF_test <- predict(fit.rf.1, test_data, type = "prob")
+fit_tree_test <- predict(fit.tree, test_data)
+
+
+fit_backward.roc <- roc(test_data$virality, fit_backward_test)
+fit_lasso.roc <- roc(test_data$virality, fit_lasso_test)
+fit_RF.roc <- roc(test_data$virality,fit_RF_test[,2])
+fit_tree.roc <- roc(test_data$virality,fit_tree_test[,2])
+
+
+
+plot(1-fit_backward.roc$specificities, fit_backward.roc$sensitivities,
+     col="red", type="l", lwd=3,
+     xlab=paste(" AUC(Backward) =",
+                round(pROC::auc(fit_backward.roc),3),
+                " AUC(Lasso) =",
+                round(pROC::auc(fit_lasso.roc),3),
+                " AUC(RF) =",
+                round(pROC::auc(fit_RF.roc),3),
+                " AUC(Tree) =",
+                round(pROC::auc(fit_tree.roc),3)),
+     ylab="Sensitivities")
+lines(1-fit_lasso.roc$specificities, fit_lasso.roc$sensitivities, col="green", lwd=3)
+lines(1-fit_RF.roc$specificities,fit_RF.roc$sensitivities,col="blue", lwd=3)
+lines(1-fit_tree.roc$specificities,fit_tree.roc$sensitivities,col="black", lwd=3)
+legend("bottomright", legend=c("fitbackward", "fit_lasso", "fit_RF", "fit_tree"),
+       lty=c(1,1,1,1), lwd=c(2,2,2,2), col=c("red","green","blue", "black"))
+
+title("Comparison of four models using testing data")
+
+```
+
+In the ROC plots as well, we can see that the randomforest is the best model to go by based on the AUC being the highest. 
+
+## Conclusion
+
+The goal of our project was to build a model that predicts the likelihood of a post or article going viral based on it’s characteristicsWe explored four different classification models and settled on Random Forest as our preferred model from an accuracy standpoint. It had the lowest testing classification error as well as the highest AUC.
+
+Across models, certain predictors stood out as critical to virality or share count of an article. These included data channel (technology vs social media vs business), presence of popular keywords, subjectivity and tone of the article as well as number of links to other articles.Governments / organizations will be able use this model to predict the likelihood of virality of an article. This in turn can help in quick moderation of information. 
+
+# Appendix
+
+We have listed all the code used in the project below
+
+**Data import and cleaning**
+
+```{r eval= FALSE, echo=TRUE}
+data.org <- read.csv("OnlineNewsPopularity.csv")
+
+#Cleaning the data
+data_clean <- data.org %>%
+  select(-url, -timedelta, -n_non_stop_words, -n_non_stop_unique_tokens, -num_self_hrefs, -kw_min_min, -kw_max_min, -kw_min_max, -kw_max_max, -kw_min_avg, -kw_max_avg, -self_reference_min_shares, -self_reference_max_shares, -self_reference_avg_sharess, -is_weekend) %>%
+  filter(n_unique_tokens > 0) %>%
+  mutate(data_channel = if_else(data_channel_is_lifestyle == 1, "Lifestyle", if_else(data_channel_is_entertainment == 1, "Entertainment", if_else(data_channel_is_bus == 1, "Business", if_else(data_channel_is_socmed == 1, "Social Media", if_else(data_channel_is_tech == 1, "Technology", if_else(data_channel_is_world == 1,"World","Other"))))))) %>%
+  mutate(day_published = if_else(weekday_is_monday == 1, "Monday", if_else(weekday_is_tuesday == 1, "Tuesday", if_else(weekday_is_wednesday == 1, "Wednesday", if_else(weekday_is_thursday == 1, "Thursday", if_else(weekday_is_friday == 1, "Friday", if_else(weekday_is_saturday == 1,"Saturday","Sunday"))))))) %>%
+  mutate(data_channel = as.factor(data_channel)) %>%
+  mutate(day_published = as.factor(day_published))%>%
+  select(-weekday_is_monday, -weekday_is_tuesday, -weekday_is_wednesday,-weekday_is_thursday, -weekday_is_friday, -weekday_is_saturday, -weekday_is_sunday,-data_channel_is_lifestyle, -data_channel_is_entertainment, -data_channel_is_bus, -data_channel_is_socmed, -data_channel_is_tech,-data_channel_is_world) %>%
+  select(-LDA_00, -LDA_01, -LDA_02, -LDA_03, -LDA_04, -global_rate_positive_words, -global_rate_negative_words, -rate_negative_words, -min_positive_polarity, -max_positive_polarity, -min_negative_polarity, -max_negative_polarity, -abs_title_subjectivity, -abs_title_sentiment_polarity) %>%
+  mutate(virality = as.factor(if_else(shares > median(shares),1,0))) #creating response variable
+
+summary(data_clean)
+
+```
+
+**EDA**
+
+```{r eval= FALSE, echo=TRUE}
+
+#Plotting relationship between shares and number of links, images and videos in the article
+
+par(mfrow=c(1,3))
+plot(data_clean$num_videos, data_clean$shares, pch=16, xlab = "Number of videos", ylab = "Number of shares")
+plot(data_clean$num_imgs, data_clean$shares, pch=16, xlab = "Number of images", ylab = "Number of shares")
+plot(data_clean$num_hrefs, data_clean$shares, pch=16, xlab = "Number of links", ylab = "Number of shares")
+
+#Plotting relationship between NLP features and shares
+
+par(mfrow=c(1,3))
+plot(data_clean$avg_positive_polarity, data_clean$shares, pch=16, xlab = "Average positive polarity", ylab = "Number of shares")
+plot(data_clean$global_subjectivity, data_clean$shares, pch=16, xlab = "Global subjectivity", ylab = "Number of shares")
+plot(data_clean$global_sentiment_polarity, data_clean$shares, pch=16, xlab = "Global sentiment polarity", ylab = "Number of shares")
+
+#Plotting relationship between other external characteristics and shares
+
+a <- data_clean %>%
+ggplot(aes(x = num_keywords, y = shares)) +
+geom_bar(stat = "identity", position = "dodge") +
+theme(axis.text.y = element_text(angle = 60), axis.text.x = element_text(angle = 60)) +
+ggtitle("Keywords vs. Shares")
+
+b <- data_clean %>%
+ggplot(aes(x = data_channel, y = shares)) +
+geom_bar(stat = "identity", position = "dodge") +
+theme(axis.text.y = element_text(angle = 60), axis.text.x = element_text(angle = 60)) +
+ggtitle("Datachannel vs. Shares")  
+
+c <- data_clean %>%
+ggplot(aes(x = day_published, y = shares)) +
+geom_bar(stat = "identity", position = "dodge") +
+theme(axis.text.y = element_text(angle = 60), axis.text.x = element_text(angle = 60)) +
+ggtitle("Publishing day vs. Shares")  
+
+plot_grid(a, b, c, align = "h", ncol = 3)
+
+#Virality vs Subjectivity 
+
+data_clean %>% group_by(virality) %>% summarise(mean(title_subjectivity))
+boxplot(title_subjectivity ~ virality, data_clean)
+
+#HeatMap
+heat_map_data <- data_clean %>%
+  select(-data_channel, -day_published, -virality)
+heatmap(cor(heat_map_data))
+
+#Correlation plots
+
+ggpairs(data_clean %>% select (n_tokens_title, n_tokens_content, n_unique_tokens, num_hrefs, num_imgs, num_videos, average_token_length, num_keywords, kw_avg_min, kw_avg_max, kw_avg_avg, global_subjectivity, global_sentiment_polarity, rate_positive_words, avg_positive_polarity, avg_negative_polarity, title_subjectivity, title_sentiment_polarity, virality))
+
+#Log transform of the variable
+data_clean %<>%
+  mutate(n_tokens_content = log(n_tokens_content))
+
+```
+
+**Lasso logistic**
+
+```{r eval= FALSE, echo=TRUE}
+
+#Lasso logistic
+
+#divide between training and testing data
+set.seed(06071991)
+index.t <- sample(nrow(data_clean), 0.7*dim(data_clean)[1])
+train_data <- data_clean[index.t, ]
+test_data <- data_clean[-index.t, ]
+
+#Lasso Logistic regression
+X <- model.matrix(virality~., train_data)[,-1] # for each factor: num of levels -1
+Y <- train_data[, 21]
+set.seed(07041992) # to have same sets of K folds
+fit1.cv <- cv.glmnet(X, Y, alpha=1, family="binomial", nfolds = 10)
+plot(fit1.cv)
+
+#Selecting lambda
+coef.1se <- coef(fit1.cv, s="lambda.1se")
+coef.1se <- coef.1se[which(coef.1se !=0),]
+rownames(as.matrix(coef.1se))
+
+fit.lasso.glm <- glm(virality ~ n_tokens_content + num_hrefs + num_keywords + kw_avg_max + kw_avg_avg + global_subjectivity + rate_positive_words + title_subjectivity + title_sentiment_polarity + data_channel + day_published, data = train_data, family = binomial(logit))
+
+#checking significance
+Anova(fit.lasso.glm)
+
+#Lasso logistic model summary
+summary(fit.lasso.glm)
+
+```
+
+**Backward elimination**
+
+```{r eval= FALSE, echo=TRUE}
+#Backward Elimination
+fit1 <- glm(virality~., data = train_data, family = binomial(logit))
+Anova(fit1)
+fit1.1 <- update(fit1, .~. -n_tokens_title)
+Anova(fit1.1)
+fit1.2 <- update(fit1.1, .~. -avg_negative_polarity)
+Anova(fit1.2)
+fit1.3 <- update(fit1.2, .~. -num_imgs)
+Anova(fit1.3)
+fit1.4 <- update(fit1.3, .~. -global_sentiment_polarity)
+Anova(fit1.4)
+fit1.5 <- update(fit1.4, .~. -num_videos)
+Anova(fit1.5)
+fit1.6 <- update(fit1.5, .~. -average_token_length)
+Anova(fit1.6)
+fit1.7 <- update(fit1.6, .~. -n_unique_tokens)
+Anova(fit1.7)
+fit1.8 <- update(fit1.7, .~. -title_subjectivity)
+Anova(fit1.8)
+
+#final model
+fit.BE <- fit1.8
+summary(fit.BE)
+
+#Significance test
+Anova(fit.BE)
+```
+
+**Tree and Random forest**
+
+
+```{r eval= FALSE, echo=TRUE}
+
+#Single tree
+fit.tree <- tree(virality~., train_data, control=tree.control(nrow(train_data), mindev = 0.005), split = "deviance")
+plot(fit.tree) 
+text(fit.tree, pretty = TRUE)
+#Here is a summary of the decision tree
+summary(fit.tree)
+
+## Random forest
+
+fit.rf.1 <- randomForest(virality~., train_data, mtry=3, ntree=500) # change ntree
+plot(fit.rf.1, pch=16, type="p", main="default plot") 
+legend("topright", colnames(fit.rf.1$err.rate), col=1:3, cex=0.8, fill=1:3)
+
+#with bootstrap
+fit.rf.1 <- randomForest(virality~., train_data, mtry=5, ntree=300, importance = T) # by default, the minsize = 5 in regression 
+plot(fit.rf.1)
+
+#variable importance
+rf.imp <- randomForest::importance(fit.rf.1, type=2) 
+rf.imp <- rf.imp[order(rf.imp, decreasing = T), ] # type2 to choose the mean gini index reduction 
+varImpPlot(fit.rf.1, type=2)
+```
+
+**Model Selection**
+
+
+```{r eval=FALSE, echo=TRUE}
+
+##MCE
+
+#Lasso logistic
+predict.lasso <- predict(fit.lasso.glm, test_data, type = "response")
+fit.lasso.test.err <- mean(test_data$virality != ifelse(predict.lasso>0.5,1,0))
+paste("Testing classification error for Lasso logistic is ", fit.lasso.test.err)
+
+#Backward elimination
+predict.BE <- predict(fit.BE, test_data, type = "response")
+fit.BE.test.err <- mean(test_data$virality != ifelse(predict.BE>0.5,1,0))
+paste("Testing classification error for the logistic regression model by backward elimination is", fit.BE.test.err)
+
+#Single decision tree
+predict.tree <- predict(fit.tree, test_data, type = "class")
+paste("Testing classification error for single tree is",mean(predict.tree!= test_data$virality))
+
+#Random Forest
+predict.rf1 <- predict(fit.rf.1, test_data, type = "response")
+paste("Testing classification error for Random Forest is",mean(predict.rf1!= test_data$virality))
+
+## ROC Curves
+
+
+fit_backward_test <- predict(fit.BE, test_data, type="response") # get the prob's
+fit_lasso_test <- predict(fit.lasso.glm, test_data, type="response")
+fit_RF_test <- predict(fit.rf.1, test_data, type = "prob")
+fit_tree_test <- predict(fit.tree, test_data)
+
+
+fit_backward.roc <- roc(test_data$virality, fit_backward_test)
+fit_lasso.roc <- roc(test_data$virality, fit_lasso_test)
+fit_RF.roc <- roc(test_data$virality,fit_RF_test[,2])
+fit_tree.roc <- roc(test_data$virality,fit_tree_test[,2])
+
+
+
+plot(1-fit_backward.roc$specificities, fit_backward.roc$sensitivities,
+     col="red", type="l", lwd=3,
+     xlab=paste(" AUC(fit_backward) =",
+                round(pROC::auc(fit_backward.roc),3),
+                " AUC(fit_lasso) =",
+                round(pROC::auc(fit_lasso.roc),3),
+                " AUC(fit_RF) =",
+                round(pROC::auc(fit_RF.roc),3),
+                " AUC(fit_tree) =",
+                round(pROC::auc(fit_tree.roc),3)),
+     ylab="Sensitivities")
+lines(1-fit_lasso.roc$specificities, fit_lasso.roc$sensitivities, col="green", lwd=3)
+lines(1-fit_RF.roc$specificities,fit_RF.roc$sensitivities,col="blue", lwd=3)
+lines(1-fit_tree.roc$specificities,fit_tree.roc$sensitivities,col="black", lwd=3)
+legend("bottomright", legend=c("fitbackward", "fit_lasso", "fit_RF", "fit_tree"),
+       lty=c(1,1,1,1), lwd=c(2,2,2,2), col=c("red","green","blue", "black"))
+
+title("Comparison of four models using testing data")
+
+```
+
+
+
